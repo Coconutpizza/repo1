@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hyperspace Visualizer</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Segoe UI', sans-serif;
+            color: white;
+        }
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: radial-gradient(circle, #000 0%, #111 100%);
+            z-index: 100;
+            transition: opacity 0.8s ease;
+        }
+        h1 {
+            font-size: 4rem;
+            text-transform: uppercase;
+            letter-spacing: 12px;
+            background: linear-gradient(90deg, #ff00ff, #00ffff, #ffff00);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 2rem;
+            filter: drop-shadow(0 0 10px rgba(255,255,255,0.5));
+        }
+        #start-btn {
+            padding: 15px 50px;
+            font-size: 1.2rem;
+            background: transparent;
+            color: #fff;
+            border: 2px solid #fff;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            transition: 0.2s;
+            box-shadow: 0 0 15px rgba(255,255,255,0.3);
+            border-radius: 50px;
+        }
+        #start-btn:hover {
+            background: #fff;
+            color: #000;
+            box-shadow: 0 0 50px #fff;
+        }
+        
+        #controls {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: rgba(0,0,0,0.5);
+            padding: 15px 30px;
+            border-radius: 30px;
+            border: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(4px);
+        }
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 300px;
+            height: 4px;
+            background: linear-gradient(90deg, #444, #888);
+            outline: none;
+            margin-top: 10px;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #00ffff;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 10px #00ffff;
+        }
+        label {
+            font-family: monospace;
+            font-size: 0.9rem;
+            letter-spacing: 2px;
+            color: #ccc;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="overlay">
+        <h1>Hyperspace Spectrum</h1>
+        <button id="start-btn">Enter Void</button>
+    </div>
+
+    <div id="controls">
+        <label>System Intensity</label>
+        <input type="range" id="aggroSlider" min="0.5" max="5.0" step="0.1" value="3.0">
+    </div>
+
+    <script type="module">
+        import * as THREE from 'https://cdn.skypack.dev/three@0.136.0';
+        import { OrbitControls } from 'https://cdn.skypack.dev/three@0.136.0/examples/jsm/controls/OrbitControls.js';
+        import { UnrealBloomPass } from 'https://cdn.skypack.dev/three@0.136.0/examples/jsm/postprocessing/UnrealBloomPass.js';
+        import { EffectComposer } from 'https://cdn.skypack.dev/three@0.136.0/examples/jsm/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'https://cdn.skypack.dev/three@0.136.0/examples/jsm/postprocessing/RenderPass.js';
+        import { createNoise3D } from 'https://cdn.skypack.dev/simplex-noise@4.0.0';
+
+        // --- CONFIG ---
+        const SPHERE_RADIUS = 15;
+        const DUST_COUNT = 10000; 
+        const STAR_COUNT = 5000;
+        
+        // --- GLOBALS ---
+        let scene, camera, renderer, composer, controls;
+        let sphereMesh, starField;
+        let dustRings = []; 
+        
+        let audioCtx, analyser, dataArray, source;
+        let isRunning = false;
+        
+        // Data State
+        let originalSpherePos = [];
+        let bass = 0, mid = 0, treble = 0;
+        let colorOffset = 0; // For cycling spectrum
+        
+        // Tools
+        const noise3D = createNoise3D();
+        const startBtn = document.getElementById('start-btn');
+        const overlay = document.getElementById('overlay');
+        const aggroSlider = document.getElementById('aggroSlider');
+
+        // --- SETUP ---
+        startBtn.addEventListener('click', async () => {
+            try {
+                await setupAudio();
+                initScene();
+                isRunning = true;
+                overlay.style.opacity = '0';
+                setTimeout(() => overlay.style.display = 'none', 800);
+                animate();
+            } catch (e) {
+                console.error(e);
+                alert("Microphone Access Required");
+            }
+        });
+
+        async function setupAudio() {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 2048; 
+            analyser.smoothingTimeConstant = 0.6; // Responsive
+            source = audioCtx.createMediaStreamSource(stream);
+            source.connect(analyser);
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+        }
+
+        function initScene() {
+            scene = new THREE.Scene();
+            // Deep space fog
+            scene.fog = new THREE.FogExp2(0x000000, 0.001);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 3000);
+            camera.position.set(0, 10, 80);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 0.2;
+
+            // --- Post Processing (Bloom) ---
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0;
+            bloomPass.strength = 1.6; 
+            bloomPass.radius = 0.5;
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            createSpikedSphere();
+            createStarfield();
+            
+            // Create Rings
+            createDustRing(25, 4, 0.2); 
+            createDustRing(40, 6, 0.15);
+            createDustRing(60, 4, 0.1); 
+
+            window.addEventListener('resize', onResize);
+        }
+
+        function createStarfield() {
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const colors = [];
+
+            for(let i=0; i<STAR_COUNT; i++) {
+                const x = (Math.random() - 0.5) * 2000;
+                const y = (Math.random() - 0.5) * 2000;
+                const z = (Math.random() - 0.5) * 2000;
+                positions.push(x, y, z);
+                
+                // Dim white/blue stars
+                const brightness = Math.random();
+                colors.push(brightness, brightness, brightness + 0.2); 
+            }
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            const material = new THREE.PointsMaterial({
+                size: 1.5,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.8
+            });
+
+            starField = new THREE.Points(geometry, material);
+            scene.add(starField);
+        }
+
+        function createSpikedSphere() {
+            const geometry = new THREE.IcosahedronGeometry(SPHERE_RADIUS, 15); // High detail
+            geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(geometry.attributes.position.count * 3), 3));
+            
+            const material = new THREE.MeshBasicMaterial({ 
+                vertexColors: true, 
+                wireframe: true,
+                transparent: true,
+                opacity: 0.9,
+                blending: THREE.AdditiveBlending 
+            });
+
+            sphereMesh = new THREE.Mesh(geometry, material);
+            scene.add(sphereMesh);
+
+            const pos = geometry.attributes.position;
+            originalSpherePos = [];
+            for(let i=0; i<pos.count; i++){
+                const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).normalize();
+                originalSpherePos.push(v);
+            }
+        }
+
+        function createDustRing(radius, width, speedMult) {
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const colors = [];
+            const originalData = [];
+
+            for(let i=0; i<DUST_COUNT; i++) {
+                const theta = Math.random() * Math.PI * 2;
+                const r = radius + (Math.random() - 0.5) * width;
+                
+                const x = Math.cos(theta) * r;
+                const z = Math.sin(theta) * r;
+                const y = (Math.random() - 0.5) * 2;
+
+                positions.push(x, y, z);
+                colors.push(1, 1, 1);
+                
+                // Store angle and radius separately to calculate radial spikes
+                originalData.push({ angle: theta, r: r, y: y, originalR: r });
+            }
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            const material = new THREE.PointsMaterial({
+                size: 0.3,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending
+            });
+
+            const points = new THREE.Points(geometry, material);
+            scene.add(points);
+            
+            dustRings.push({ 
+                mesh: points, 
+                data: originalData, 
+                speedMult: speedMult 
+            });
+        }
+
+        function getAvg(data, min, max) {
+            const start = Math.floor(min * data.length);
+            const end = Math.floor(max * data.length);
+            let sum = 0;
+            for(let i=start; i<end; i++) sum += data[i];
+            return sum / (end - start || 1);
+        }
+
+        // Helper to set RGB from HSL manually (faster than THREE.Color conversion in loop)
+        function hslToRgb(h, s, l) {
+            let r, g, b;
+            if (s === 0) {
+                r = g = b = l; 
+            } else {
+                const hue2rgb = (p, q, t) => {
+                    if (t < 0) t += 1;
+                    if (t > 1) t -= 1;
+                    if (t < 1/6) return p + (q - p) * 6 * t;
+                    if (t < 1/2) return q;
+                    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                    return p;
+                };
+                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                const p = 2 * l - q;
+                r = hue2rgb(p, q, h + 1/3);
+                g = hue2rgb(p, q, h);
+                b = hue2rgb(p, q, h - 1/3);
+            }
+            return [r, g, b];
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if(!isRunning) return;
+
+            analyser.getByteFrequencyData(dataArray);
+            const AGGRO = parseFloat(aggroSlider.value);
+
+            // Audio Analysis
+            const rawBass = getAvg(dataArray, 0.0, 0.1);
+            const rawMid = getAvg(dataArray, 0.1, 0.3);
+            const rawTreble = getAvg(dataArray, 0.3, 1.0);
+
+            bass = bass * 0.7 + rawBass * 0.3;
+            mid = mid * 0.7 + rawMid * 0.3;
+            treble = treble * 0.7 + rawTreble * 0.3;
+            
+            const totalVol = (bass + mid + treble) / 3;
+            const time = performance.now() * 0.001;
+
+            // --- 1. SPHERE ANIMATION ---
+            if(sphereMesh) {
+                const positions = sphereMesh.geometry.attributes.position;
+                const colors = sphereMesh.geometry.attributes.color;
+
+                // Color cycling logic
+                // The offset increases constantly, but JUMPS forward when music is loud
+                colorOffset += 0.002 + (totalVol * 0.0001); 
+
+                for(let i=0; i<positions.count; i++) {
+                    const dir = originalSpherePos[i];
+                    
+                    // Noise Spikes
+                    // Noise frequency (zoom)
+                    const nFreq = 2.0; 
+                    // Noise animation speed
+                    const nSpeed = time * 1.5;
+                    
+                    const noise = noise3D(dir.x * nFreq + nSpeed, dir.y * nFreq + nSpeed, dir.z * nFreq);
+                    const spike = Math.max(0, noise); 
+
+                    // Sphere physical distortion
+                    const distortion = (bass * 0.05 * AGGRO) + (spike * treble * 0.15 * AGGRO);
+                    const dist = SPHERE_RADIUS + distortion;
+                    positions.setXYZ(i, dir.x * dist, dir.y * dist, dir.z * dist);
+
+                    // --- FULL SPECTRUM RGB LOGIC ---
+                    // Hue varies by vertex position AND time
+                    // This creates the "rainbow swirling" effect
+                    let h = (colorOffset + (dir.x * 0.2) + (dir.y * 0.2)) % 1.0;
+                    
+                    // Saturation is high. 
+                    // Lightness is boosted by spikes (loud parts glow white-hot)
+                    const l = 0.3 + (spike * 0.7 * (totalVol/200));
+
+                    const [r, g, b] = hslToRgb(h, 0.8, l);
+                    
+                    colors.setXYZ(i, r, g, b);
+                }
+                positions.needsUpdate = true;
+                colors.needsUpdate = true;
+            }
+
+            // --- 2. SPIKY RINGS ANIMATION ---
+            dustRings.forEach((ring, idx) => {
+                const positions = ring.mesh.geometry.attributes.position;
+                const colors = ring.mesh.geometry.attributes.color;
+                
+                // Ring Rotation
+                const spin = 0.001 + (bass * 0.0001 * ring.speedMult);
+                ring.mesh.rotation.y += (idx % 2 === 0 ? 1 : -1) * spin;
+
+                // Scale ring with bass
+                const expansion = 1 + (bass / 600) * AGGRO;
+                ring.mesh.scale.setScalar(expansion);
+
+                for(let i=0; i<DUST_COUNT; i++) {
+                    const d = ring.data[i];
+
+                    // Noise calculation for RING SPIKES
+                    // We map the noise to the ring's circular path
+                    // Use cos/sin of angle for X/Z coordinates in noise space
+                    const noiseX = Math.cos(d.angle) * 3 + time;
+                    const noiseZ = Math.sin(d.angle) * 3 + time;
+                    
+                    // Calculate Radial Noise (Spikes outward)
+                    const rNoise = noise3D(noiseX, i * 0.01, noiseZ); // i adds variation
+                    const spikeVal = Math.max(0, rNoise);
+
+                    // Vertical Wave (Wobble)
+                    const waveY = Math.sin(d.angle * 4 + time * 2) * (bass * 0.02);
+
+                    // Radial Spike Amount
+                    const radialPush = spikeVal * (treble * 0.1 * AGGRO);
+
+                    // New Radius
+                    const currentR = d.originalR + radialPush;
+
+                    // Recalculate X/Z based on new spiked radius
+                    const newX = Math.cos(d.angle) * currentR;
+                    const newZ = Math.sin(d.angle) * currentR;
+
+                    positions.setXYZ(i, newX, d.y + waveY, newZ);
+
+                    // Ring Colors - Match Sphere Spectrum
+                    let h = (colorOffset + (d.angle * 0.1)) % 1.0;
+                    const l = 0.4 + (spikeVal * 0.6);
+                    const [r, g, b] = hslToRgb(h, 0.9, l);
+                    
+                    colors.setXYZ(i, r, g, b);
+                }
+                positions.needsUpdate = true;
+                colors.needsUpdate = true;
+            });
+
+            // --- 3. SPACE WARP EFFECT ---
+            // Move stars towards camera to feel like flying
+            const starPos = starField.geometry.attributes.position;
+            // Speed depends on volume
+            const warpSpeed = 1 + (totalVol / 20); 
+            
+            for(let i=0; i<STAR_COUNT; i++) {
+                let z = starPos.getZ(i);
+                z += warpSpeed;
+                
+                // Reset if it passes camera
+                if(z > 100) z = -2000;
+                
+                starPos.setZ(i, z);
+            }
+            starPos.needsUpdate = true;
+
+            controls.update();
+            composer.render();
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+    </script>
+</body>
+</html>
